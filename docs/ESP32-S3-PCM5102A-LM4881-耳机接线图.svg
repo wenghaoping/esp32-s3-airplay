@@ -1,0 +1,88 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1240" height="1754" viewBox="0 0 1240 1754" role="img" aria-labelledby="title desc">
+  <title id="title">ESP32-S3、PCM5102A 与 LM4881 耳机接线图</title>
+  <desc id="desc">A4 可打印接线图：所有连线都保持水平，对应 ESP32-S3、PCM5102A、LM4881 和 3.5 毫米耳机母座。</desc>
+  <style>
+    .bg{fill:#f8fafc}.t{font-family:'PingFang SC','Microsoft YaHei',Arial,sans-serif;fill:#0f172a}.w{fill:#fff}.panel{fill:#fff;stroke:#cbd5e1;stroke-width:3}.warn{fill:#fff7ed;stroke:#fb923c;stroke-width:3}.esp{fill:#172554;stroke:#0f172a;stroke-width:4}.pcm{fill:#6b21a8;stroke:#3b0764;stroke-width:4}.amp{fill:#b91c1c;stroke:#7f1d1d;stroke-width:4}.jack{fill:#334155;stroke:#0f172a;stroke-width:4}.pin{fill:#fff;stroke:#94a3b8;stroke-width:2}.h1{font-size:42px;font-weight:700}.h2{font-size:28px;font-weight:700}.sub{font-size:20px}.p{font-size:25px;font-weight:700}.note{font-size:21px}.power{stroke:#dc2626;stroke-width:7}.ground{stroke:#111827;stroke-width:7}.i2s{stroke:#2563eb;stroke-width:7}.analog{stroke:#16a34a;stroke-width:7}.out{stroke:#f59e0b;stroke-width:7}
+  </style>
+  <rect width="1240" height="1754" class="bg"/>
+  <text x="620" y="76" text-anchor="middle" class="t h1">ESP32-S3 → PCM5102A → LM4881 → 耳机</text>
+  <text x="620" y="116" text-anchor="middle" class="t h2">直线一一对应接线图</text>
+  <rect x="55" y="145" width="1130" height="68" rx="16" class="warn"/>
+  <text x="620" y="189" text-anchor="middle" class="t h2">请在断电状态接线；所有信号线均为水平对应。</text>
+
+  <text x="70" y="265" class="t h2">第一部分：ESP32-S3 → PCM5102A 数字音频 DAC</text>
+  <rect x="70" y="290" width="405" height="495" rx="28" class="esp"/>
+  <rect x="765" y="290" width="405" height="495" rx="28" class="pcm"/>
+  <text x="272" y="348" text-anchor="middle" class="w h1">ESP32-S3</text>
+  <text x="272" y="387" text-anchor="middle" class="w h2">物理引脚</text>
+  <text x="967" y="348" text-anchor="middle" class="w h1">PCM5102A</text>
+  <text x="967" y="387" text-anchor="middle" class="w h2">主排针</text>
+
+  <rect x="205" y="422" width="200" height="48" rx="10" class="pin"/><text x="305" y="455" text-anchor="middle" class="t p">5V</text>
+  <rect x="835" y="422" width="200" height="48" rx="10" class="pin"/><text x="935" y="455" text-anchor="middle" class="t p">VIN</text>
+  <line x1="405" y1="446" x2="835" y2="446" class="power"/><text x="620" y="435" text-anchor="middle" class="t sub">5V 供电</text>
+
+  <rect x="205" y="482" width="200" height="48" rx="10" class="pin"/><text x="305" y="515" text-anchor="middle" class="t p">GND</text>
+  <rect x="835" y="482" width="200" height="48" rx="10" class="pin"/><text x="935" y="515" text-anchor="middle" class="t p">GND</text>
+  <line x1="405" y1="506" x2="835" y2="506" class="ground"/><text x="620" y="495" text-anchor="middle" class="t sub">公共地</text>
+
+  <rect x="205" y="542" width="200" height="48" rx="10" class="pin"/><text x="305" y="575" text-anchor="middle" class="t p">GPIO8</text>
+  <rect x="835" y="542" width="200" height="48" rx="10" class="pin"/><text x="935" y="575" text-anchor="middle" class="t p">SCK</text>
+  <line x1="405" y1="566" x2="835" y2="566" class="i2s"/><text x="620" y="555" text-anchor="middle" class="t sub">I²S 主时钟 MCLK</text>
+
+  <rect x="205" y="602" width="200" height="48" rx="10" class="pin"/><text x="305" y="635" text-anchor="middle" class="t p">GPIO11</text>
+  <rect x="835" y="602" width="200" height="48" rx="10" class="pin"/><text x="935" y="635" text-anchor="middle" class="t p">BCK</text>
+  <line x1="405" y1="626" x2="835" y2="626" class="i2s"/><text x="620" y="615" text-anchor="middle" class="t sub">I²S 位时钟 BCLK</text>
+
+  <rect x="205" y="662" width="200" height="48" rx="10" class="pin"/><text x="305" y="695" text-anchor="middle" class="t p">GPIO12</text>
+  <rect x="835" y="662" width="200" height="48" rx="10" class="pin"/><text x="935" y="695" text-anchor="middle" class="t p">DIN</text>
+  <line x1="405" y1="686" x2="835" y2="686" class="i2s"/><text x="620" y="675" text-anchor="middle" class="t sub">I²S 音频数据 DATA</text>
+
+  <rect x="205" y="722" width="200" height="48" rx="10" class="pin"/><text x="305" y="755" text-anchor="middle" class="t p">GPIO13</text>
+  <rect x="835" y="722" width="200" height="48" rx="10" class="pin"/><text x="935" y="755" text-anchor="middle" class="t p">LCK / LRCK</text>
+  <line x1="405" y1="746" x2="835" y2="746" class="i2s"/><text x="620" y="735" text-anchor="middle" class="t sub">I²S 左右声道时钟 LRCK</text>
+
+  <text x="70" y="855" class="t h2">第二部分：PCM5102A 模拟输出 → LM4881 耳放 → 耳机母座</text>
+  <rect x="65" y="885" width="310" height="520" rx="28" class="pcm"/>
+  <rect x="465" y="885" width="310" height="520" rx="28" class="amp"/>
+  <rect x="865" y="885" width="310" height="520" rx="28" class="jack"/>
+  <text x="220" y="945" text-anchor="middle" class="w h2">PCM5102A 背面</text>
+  <text x="620" y="945" text-anchor="middle" class="w h1">LM4881</text>
+  <text x="620" y="983" text-anchor="middle" class="w h2">耳机放大器</text>
+  <text x="1020" y="945" text-anchor="middle" class="w h2">3.5mm 立体声母座</text>
+  <text x="1020" y="983" text-anchor="middle" class="w sub">耳机插这里</text>
+
+  <rect x="135" y="1020" width="170" height="48" rx="10" class="pin"/><text x="220" y="1053" text-anchor="middle" class="t p">ROUT</text>
+  <rect x="535" y="1020" width="170" height="48" rx="10" class="pin"/><text x="620" y="1053" text-anchor="middle" class="t p">IN R</text>
+  <line x1="305" y1="1044" x2="535" y2="1044" class="analog"/>
+
+  <rect x="135" y="1080" width="170" height="48" rx="10" class="pin"/><text x="220" y="1113" text-anchor="middle" class="t p">AGND</text>
+  <rect x="535" y="1080" width="170" height="48" rx="10" class="pin"/><text x="620" y="1113" text-anchor="middle" class="t p">IN GND</text>
+  <line x1="305" y1="1104" x2="535" y2="1104" class="ground"/>
+
+  <rect x="135" y="1140" width="170" height="48" rx="10" class="pin"/><text x="220" y="1173" text-anchor="middle" class="t p">LROUT</text>
+  <rect x="535" y="1140" width="170" height="48" rx="10" class="pin"/><text x="620" y="1173" text-anchor="middle" class="t p">IN L</text>
+  <line x1="305" y1="1164" x2="535" y2="1164" class="analog"/>
+
+  <rect x="535" y="1220" width="170" height="48" rx="10" class="pin"/><text x="620" y="1253" text-anchor="middle" class="t p">OUT R</text>
+  <rect x="935" y="1220" width="170" height="48" rx="10" class="pin"/><text x="1020" y="1253" text-anchor="middle" class="t p">R（中间环）</text>
+  <line x1="705" y1="1244" x2="935" y2="1244" class="out"/>
+
+  <rect x="535" y="1280" width="170" height="48" rx="10" class="pin"/><text x="620" y="1313" text-anchor="middle" class="t p">OUT GND</text>
+  <rect x="935" y="1280" width="170" height="48" rx="10" class="pin"/><text x="1020" y="1313" text-anchor="middle" class="t p">GND（最外圈）</text>
+  <line x1="705" y1="1304" x2="935" y2="1304" class="ground"/>
+
+  <rect x="535" y="1340" width="170" height="48" rx="10" class="pin"/><text x="620" y="1373" text-anchor="middle" class="t p">OUT L</text>
+  <rect x="935" y="1340" width="170" height="48" rx="10" class="pin"/><text x="1020" y="1373" text-anchor="middle" class="t p">L（插头尖端）</text>
+  <line x1="705" y1="1364" x2="935" y2="1364" class="out"/>
+
+  <rect x="465" y="1420" width="310" height="120" rx="14" class="warn"/>
+  <text x="620" y="1460" text-anchor="middle" class="t h2">LM4881 独立供电</text>
+  <text x="620" y="1496" text-anchor="middle" class="t note">VCC「+」接 ESP32 物理 5V</text>
+  <text x="620" y="1528" text-anchor="middle" class="t note">VCC「-」接 ESP32 物理 GND</text>
+
+  <rect x="65" y="1590" width="1110" height="108" rx="18" class="panel"/>
+  <text x="92" y="1628" class="t h2">注意</text>
+  <text x="92" y="1662" class="t note">• LM4881 的 IN 与 OUT 不要接反；耳机只能接 OUT 一侧的 3.5mm 母座。</text>
+  <text x="92" y="1690" class="t note">• PCM5102A 的 FLT / DEMP / XSMT / FMT / A3V3 仍不接；无需修改固件。</text>
+</svg>
