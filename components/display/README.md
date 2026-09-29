@@ -134,9 +134,27 @@ curl -X POST "http://<device-ip>/api/fs/upload?path=/spiffs/bg/background.bin" \
 ```
 Then reboot the device — the new background loads on next boot.
 
-> **Note:** There is no web UI for background uploads. The device's web
-> interface is for WiFi setup and device configuration only. Background
-> updates are done via the `curl` command above.
+The main web page also exposes an **ST7789 背景图** card when the TFT driver is
+enabled. Select a PNG/JPEG/WebP image (source limit: 2 MB); the browser crops it
+to the active panel size and uploads the exact RGB565 buffer. The device writes
+the new file atomically and reloads it without a reboot. The API endpoints are:
+
+* `GET /api/display/info` — active dimensions and output size
+* `POST /api/display/background` — RGB565 little-endian buffer
+
+The upload endpoint accepts only the exact output size (108800 bytes for
+320×170, 115200 bytes for 240×240), so malformed or truncated files cannot
+replace a valid background.
+
+### Chinese metadata
+
+ESP32-S3 ST7789 builds include a generated LVGL version of the WenQuanYi
+GB2312 font already used by the OLED path. It contains the complete GB2312
+Chinese set plus Latin, punctuation and symbols, so UTF-8 title, artist and
+album strings render on the TFT in the same way as on the OLED path.
+Unsupported Unicode code points fall back to the font replacement glyph.
+The committed font is reproducible with
+`python3 components/display/generate_chinese_font.py`.
 
 ### Colour Depth Limitation
 

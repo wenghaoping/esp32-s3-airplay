@@ -15,6 +15,7 @@ typedef enum {
   RTSP_EVENT_PAUSED,
   RTSP_EVENT_DISCONNECTED,
   RTSP_EVENT_METADATA,
+  RTSP_EVENT_ARTWORK,
 } rtsp_event_t;
 
 // ============================================================================
@@ -34,12 +35,23 @@ typedef struct {
   bool has_artwork;                 // Whether artwork is available
 } rtsp_metadata_t;
 
+/**
+ * Artwork data is valid only for the duration of the event callback. A
+ * listener that needs to use it asynchronously must copy it first.
+ */
+typedef struct {
+  const uint8_t *data;
+  size_t len;
+  char content_type[16];
+} rtsp_artwork_t;
+
 // ============================================================================
 // Event Data Union
 // ============================================================================
 
 typedef union {
   rtsp_metadata_t metadata; // Valid when event == RTSP_EVENT_METADATA
+  rtsp_artwork_t artwork;   // Valid when event == RTSP_EVENT_ARTWORK
 } rtsp_event_data_t;
 
 /**

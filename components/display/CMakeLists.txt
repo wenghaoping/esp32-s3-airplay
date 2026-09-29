@@ -13,7 +13,8 @@ idf_component_register(
 if(CONFIG_DISPLAY_ENABLED)
     if(CONFIG_DISPLAY_DRIVER_ST7789)
         target_sources(${COMPONENT_LIB} PRIVATE
-            "${CMAKE_CURRENT_SOURCE_DIR}/display_st7789.c")
+            "${CMAKE_CURRENT_SOURCE_DIR}/display_st7789.c"
+            "${CMAKE_CURRENT_SOURCE_DIR}/font_wqy14_gb2312.c")
         target_link_libraries(${COMPONENT_LIB} PRIVATE
             idf::esp_lcd
             idf::driver

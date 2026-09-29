@@ -1610,11 +1610,23 @@ static void handle_set_parameter(int socket, rtsp_conn_t *conn,
   } else if (strstr(req->content_type, "image/jpeg") ||
              strstr(req->content_type, "image/png")) {
 #ifdef CONFIG_ENABLE_AIRPLAY_ARTWORK
-    // Artwork - log and flag in metadata
-    ESP_LOGI(TAG, "Received artwork: %s (%zu bytes)", req->content_type,
-             body_len);
-    event_data.metadata.has_artwork = true;
-    has_metadata = true;
+    // Artwork is delivered as a separate event. The event callback is
+    // synchronous, so listeners that need it after this function returns must
+    // copy the bytes before returning.
+    if (body && body_len > 0 && body_len <= (256 * 1024)) {
+      rtsp_event_data_t artwork_event;
+      memset(&artwork_event, 0, sizeof(artwork_event));
+      artwork_event.artwork.data = body;
+      artwork_event.artwork.len = body_len;
+      strlcpy(artwork_event.artwork.content_type, req->content_type,
+              sizeof(artwork_event.artwork.content_type));
+      ESP_LOGI(TAG, "Received artwork: %s (%zu bytes)", req->content_type,
+               body_len);
+      rtsp_events_emit(RTSP_EVENT_ARTWORK, &artwork_event);
+    } else {
+      ESP_LOGW(TAG, "Ignoring artwork: empty or larger than 256 KB (%zu)",
+               body_len);
+    }
 #else
     // Artwork reception disabled — ignore it.  The md txt record already asks
     // senders not to transmit cover art, but some send it regardless.

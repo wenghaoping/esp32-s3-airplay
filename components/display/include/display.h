@@ -33,6 +33,12 @@ void display_set_network_status(bool wifi_connected, const char *setup_ssid,
                                 const char *device_name,
                                 const char *ip_address);
 
+/** Return the active display dimensions, or false for non-TFT displays. */
+bool display_get_dimensions(int *width, int *height);
+
+/** Reload the persisted ST7789 background image after a web upload. */
+bool display_reload_background(void);
+
 #else
 
 static inline void display_init(void *bus) {
@@ -48,5 +54,17 @@ static inline void display_set_network_status(bool wifi_connected,
   (void)device_name;
   (void)ip_address;
 }
+
+static inline bool display_get_dimensions(int *width, int *height) {
+  if (width) {
+    *width = 0;
+  }
+  if (height) {
+    *height = 0;
+  }
+  return false;
+}
+
+static inline bool display_reload_background(void) { return false; }
 
 #endif

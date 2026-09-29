@@ -38,9 +38,12 @@
 #include "freertos/task.h"
 #include "freertos/semphr.h"
 #include "lvgl.h"
+#include "misc/cache/instance/lv_image_cache.h"
 
 #include <stdio.h>
 #include <string.h>
+
+extern const lv_font_t font_wqy14_gb2312;
 
 static const char *TAG = "display_st7789";
 
@@ -57,6 +60,8 @@ static const char *TAG = "display_st7789";
 // Background image path on SPIFFS
 #define BG_SPIFFS_PATH   "/spiffs/bg/background.bin"
 #define BG_EXPECTED_SIZE ((long)DISPLAY_WIDTH * DISPLAY_HEIGHT * 2) // RGB565
+#define COVER_MAX_BYTES  (256 * 1024)
+#define COVER_SIDE       ((DISPLAY_HEIGHT >= 220) ? 128 : 96)
 
 // ============================================================================
 // Layout constants
@@ -116,6 +121,16 @@ static lv_display_t *s_lvgl_disp = NULL;
 
 static uint8_t *s_bg_buf = NULL;
 static lv_image_dsc_t s_bg_dsc;
+static lv_obj_t *s_bg_obj = NULL;
+static uint8_t *s_cover_buf = NULL;
+static size_t s_cover_len = 0;
+static char s_cover_type[16];
+static lv_image_dsc_t s_cover_dsc;
+static lv_obj_t *s_cover_obj = NULL;
+static uint8_t *s_pending_cover = NULL;
+static size_t s_pending_cover_len = 0;
+static char s_pending_cover_type[16];
+static bool s_pending_cover_clear = false;
 
 static lv_obj_t *s_label_title = NULL;
 static lv_obj_t *s_label_artist = NULL;
@@ -128,11 +143,15 @@ static lv_obj_t *s_label_time_remaining = NULL;
 static lv_obj_t *s_label_battery = NULL;
 static lv_obj_t *s_label_volume = NULL;
 
+static bool cover_is_valid_type(const char *type) {
+  return type && (strstr(type, "image/jpeg") || strstr(type, "image/png"));
+}
+
 // ============================================================================
 // Background loading
 // ============================================================================
 
-static bool bg_load_from_spiffs(void) {
+static bool bg_read_from_spiffs(uint8_t **out_buf, long *out_size) {
   FILE *f = fopen(BG_SPIFFS_PATH, "rb");
   if (!f) {
     ESP_LOGI(TAG, "No background file at %s — using blank background",
@@ -151,23 +170,30 @@ static bool bg_load_from_spiffs(void) {
     return false;
   }
 
-  s_bg_buf = heap_caps_malloc(size, MALLOC_CAP_SPIRAM);
-  if (!s_bg_buf) {
+  uint8_t *buf = heap_caps_malloc(size, MALLOC_CAP_SPIRAM);
+  if (!buf) {
     ESP_LOGE(TAG, "Failed to allocate %ld bytes in PSRAM for background", size);
     fclose(f);
     return false;
   }
 
-  if (fread(s_bg_buf, 1, size, f) != (size_t)size) {
+  if (fread(buf, 1, size, f) != (size_t)size) {
     ESP_LOGE(TAG, "Failed to read background file");
     fclose(f);
-    heap_caps_free(s_bg_buf);
-    s_bg_buf = NULL;
+    heap_caps_free(buf);
     return false;
   }
 
   fclose(f);
 
+  ESP_LOGI(TAG, "Background loaded from SPIFFS (%ld bytes, PSRAM)", size);
+  *out_buf = buf;
+  *out_size = size;
+  return true;
+}
+
+static void bg_set_buffer(uint8_t *buf) {
+  s_bg_buf = buf;
   memset(&s_bg_dsc, 0, sizeof(s_bg_dsc));
   s_bg_dsc.header.cf = LV_COLOR_FORMAT_RGB565;
   s_bg_dsc.header.magic = LV_IMAGE_HEADER_MAGIC;
@@ -175,9 +201,6 @@ static bool bg_load_from_spiffs(void) {
   s_bg_dsc.header.h = DISPLAY_HEIGHT;
   s_bg_dsc.data_size = BG_EXPECTED_SIZE;
   s_bg_dsc.data = s_bg_buf;
-
-  ESP_LOGI(TAG, "Background loaded from SPIFFS (%ld bytes, PSRAM)", size);
-  return true;
 }
 
 // ============================================================================
@@ -222,10 +245,18 @@ static void ui_create(void) {
   // If no file was found, s_bg_buf is NULL and we skip the image widget,
   // leaving the screen black. All other widgets render normally on top.
   if (s_bg_buf) {
-    lv_obj_t *bg = lv_image_create(scr);
-    lv_image_set_src(bg, &s_bg_dsc);
-    lv_obj_align(bg, LV_ALIGN_TOP_LEFT, 0, 0);
+    s_bg_obj = lv_image_create(scr);
+    lv_image_set_src(s_bg_obj, &s_bg_dsc);
+    lv_obj_align(s_bg_obj, LV_ALIGN_TOP_LEFT, 0, 0);
   }
+
+  // Artwork is kept as a compressed LVGL image source. The JPEG/PNG decoder
+  // turns it into display pixels only when the image is rendered, avoiding a
+  // second full-size RGB buffer in PSRAM.
+  s_cover_obj = lv_image_create(scr);
+  lv_obj_set_size(s_cover_obj, COVER_SIDE, COVER_SIDE);
+  lv_obj_align(s_cover_obj, LV_ALIGN_TOP_LEFT, X_MARGIN, Y_TITLE);
+  lv_obj_add_flag(s_cover_obj, LV_OBJ_FLAG_HIDDEN);
 
   // Muted indicator — top-right corner, red, hidden by default
   s_label_muted = lv_label_create(scr);
@@ -236,10 +267,10 @@ static void ui_create(void) {
   lv_label_set_text(s_label_muted, "MUTED");
 
   // Title — largest font, white, scrolling
-  const lv_font_t *title_font =
-      (DISPLAY_HEIGHT >= 220) ? &lv_font_montserrat_14 : &lv_font_montserrat_24;
-  const lv_font_t *artist_font =
-      (DISPLAY_HEIGHT >= 220) ? &lv_font_montserrat_14 : &lv_font_montserrat_16;
+  // Use the same WenQuanYi/GB2312 family as the OLED path. The generated
+  // LVGL font contains the complete GB2312 set plus ASCII and punctuation.
+  const lv_font_t *title_font = &font_wqy14_gb2312;
+  const lv_font_t *artist_font = &font_wqy14_gb2312;
   s_label_title = lv_label_create(scr);
   lv_obj_set_width(s_label_title, DISPLAY_WIDTH - (X_MARGIN * 2));
   lv_label_set_long_mode(s_label_title, LV_LABEL_LONG_SCROLL_CIRCULAR);
@@ -261,7 +292,7 @@ static void ui_create(void) {
   s_label_album = lv_label_create(scr);
   lv_obj_set_width(s_label_album, DISPLAY_WIDTH - (X_MARGIN * 2) - 60);
   lv_label_set_long_mode(s_label_album, LV_LABEL_LONG_SCROLL_CIRCULAR);
-  lv_obj_set_style_text_font(s_label_album, &lv_font_montserrat_14, 0);
+  lv_obj_set_style_text_font(s_label_album, &font_wqy14_gb2312, 0);
   lv_obj_set_style_text_color(s_label_album, lv_color_make(140, 140, 140), 0);
   lv_obj_align(s_label_album, LV_ALIGN_TOP_LEFT, X_MARGIN, Y_ALBUM);
   lv_label_set_text(s_label_album, "");
@@ -373,6 +404,93 @@ static void ui_update_status_row(void) {
   }
 }
 
+static void ui_set_cover_layout(bool active) {
+  int x = active ? (X_MARGIN + COVER_SIDE + 10) : X_MARGIN;
+  int width = active ? (DISPLAY_WIDTH - x - X_MARGIN) :
+                       (DISPLAY_WIDTH - (X_MARGIN * 2));
+  lv_obj_set_width(s_label_title, width);
+  lv_obj_set_width(s_label_artist, width);
+  lv_obj_set_width(s_label_album, width);
+  lv_obj_align(s_label_title, LV_ALIGN_TOP_LEFT, x, Y_TITLE);
+  lv_obj_align(s_label_artist, LV_ALIGN_TOP_LEFT, x, Y_ARTIST);
+  lv_obj_align(s_label_album, LV_ALIGN_TOP_LEFT, x, Y_ALBUM);
+}
+
+static void ui_update_cover(void) {
+  uint8_t *pending = NULL;
+  size_t pending_len = 0;
+  char pending_type[sizeof(s_pending_cover_type)] = {0};
+  bool clear = false;
+
+  STATE_LOCK();
+  pending = s_pending_cover;
+  pending_len = s_pending_cover_len;
+  memcpy(pending_type, s_pending_cover_type, sizeof(pending_type));
+  clear = s_pending_cover_clear;
+  s_pending_cover = NULL;
+  s_pending_cover_len = 0;
+  memset(s_pending_cover_type, 0, sizeof(s_pending_cover_type));
+  s_pending_cover_clear = false;
+  STATE_UNLOCK();
+
+  if (!pending && !clear) {
+    return;
+  }
+
+  if (clear) {
+    if (s_cover_buf) {
+      heap_caps_free(s_cover_buf);
+      s_cover_buf = NULL;
+    }
+    s_cover_len = 0;
+    memset(s_cover_type, 0, sizeof(s_cover_type));
+    lv_obj_add_flag(s_cover_obj, LV_OBJ_FLAG_HIDDEN);
+    ui_set_cover_layout(false);
+  }
+
+  if (!pending) {
+    return;
+  }
+
+  uint8_t *old = s_cover_buf;
+  s_cover_buf = pending;
+  s_cover_len = pending_len;
+  strlcpy(s_cover_type, pending_type, sizeof(s_cover_type));
+  memset(&s_cover_dsc, 0, sizeof(s_cover_dsc));
+  s_cover_dsc.header.cf = LV_COLOR_FORMAT_RAW;
+  s_cover_dsc.header.magic = LV_IMAGE_HEADER_MAGIC;
+  s_cover_dsc.header.w = COVER_SIDE;
+  s_cover_dsc.header.h = COVER_SIDE;
+  s_cover_dsc.data_size = s_cover_len;
+  s_cover_dsc.data = s_cover_buf;
+
+  if (cover_is_valid_type(s_cover_type)) {
+    lv_image_cache_drop(&s_cover_dsc);
+    lv_image_set_src(s_cover_obj, &s_cover_dsc);
+    int32_t src_w = lv_image_get_src_width(s_cover_obj);
+    int32_t src_h = lv_image_get_src_height(s_cover_obj);
+    if (src_w > 0 && src_h > 0) {
+      uint32_t scale_x = ((uint32_t)COVER_SIDE * 256U) / (uint32_t)src_w;
+      uint32_t scale_y = ((uint32_t)COVER_SIDE * 256U) / (uint32_t)src_h;
+      uint32_t scale = scale_x < scale_y ? scale_x : scale_y;
+      if (scale == 0) {
+        scale = 1;
+      }
+      lv_image_set_scale(s_cover_obj, scale);
+    }
+    lv_image_set_inner_align(s_cover_obj, LV_IMAGE_ALIGN_CENTER);
+    lv_obj_clear_flag(s_cover_obj, LV_OBJ_FLAG_HIDDEN);
+    ui_set_cover_layout(true);
+  } else {
+    lv_obj_add_flag(s_cover_obj, LV_OBJ_FLAG_HIDDEN);
+    ui_set_cover_layout(false);
+  }
+
+  if (old) {
+    heap_caps_free(old);
+  }
+}
+
 // ============================================================================
 // UI update
 // ============================================================================
@@ -425,6 +543,8 @@ static void ui_update(void) {
 
   switch (state) {
   case DISPLAY_STATE_STANDBY:
+    lv_obj_add_flag(s_cover_obj, LV_OBJ_FLAG_HIDDEN);
+    ui_set_cover_layout(false);
     lv_label_set_text(s_label_title,
                       wifi_connected ? "WiFi Connected" : "Connect WiFi");
     lv_label_set_text(s_label_artist,
@@ -449,6 +569,8 @@ static void ui_update(void) {
     break;
 
   case DISPLAY_STATE_CONNECTED:
+    lv_obj_add_flag(s_cover_obj, LV_OBJ_FLAG_HIDDEN);
+    ui_set_cover_layout(false);
     lv_label_set_text(s_label_title, "Connected");
     lv_label_set_text(s_label_artist, "");
     lv_label_set_text(s_label_album, "");
@@ -461,6 +583,13 @@ static void ui_update(void) {
 
   case DISPLAY_STATE_PLAYING:
   case DISPLAY_STATE_PAUSED: {
+    if (s_cover_buf && s_cover_len > 0) {
+      lv_obj_clear_flag(s_cover_obj, LV_OBJ_FLAG_HIDDEN);
+      ui_set_cover_layout(true);
+    } else {
+      lv_obj_add_flag(s_cover_obj, LV_OBJ_FLAG_HIDDEN);
+      ui_set_cover_layout(false);
+    }
     lv_label_set_text(s_label_title, title[0] ? title : "---");
     lv_label_set_text(s_label_artist, artist[0] ? artist : "");
     lv_label_set_text(s_label_album, album[0] ? album : "");
@@ -546,6 +675,12 @@ void display_set_network_status(bool wifi_connected, const char *setup_ssid,
       s_display.duration_secs = 0;
       s_display.position_secs = 0;
       s_display.sync_time_us = 0;
+      s_pending_cover_clear = true;
+      if (s_pending_cover) {
+        heap_caps_free(s_pending_cover);
+        s_pending_cover = NULL;
+        s_pending_cover_len = 0;
+      }
     }
     s_display.dirty = true;
   }
@@ -574,6 +709,12 @@ static void on_rtsp_event(rtsp_event_t event, const rtsp_event_data_t *data,
     s_display.duration_secs = 0;
     s_display.position_secs = 0;
     s_display.sync_time_us = 0;
+    s_pending_cover_clear = true;
+    if (s_pending_cover) {
+      heap_caps_free(s_pending_cover);
+      s_pending_cover = NULL;
+      s_pending_cover_len = 0;
+    }
     s_display.dirty = true;
     break;
 
@@ -598,6 +739,12 @@ static void on_rtsp_event(rtsp_event_t event, const rtsp_event_data_t *data,
     s_display.duration_secs = 0;
     s_display.position_secs = 0;
     s_display.sync_time_us = 0;
+    s_pending_cover_clear = true;
+    if (s_pending_cover) {
+      heap_caps_free(s_pending_cover);
+      s_pending_cover = NULL;
+      s_pending_cover_len = 0;
+    }
     s_display.dirty = true;
     break;
 
@@ -605,6 +752,10 @@ static void on_rtsp_event(rtsp_event_t event, const rtsp_event_data_t *data,
     if (data) {
       bool track_changed = data->metadata.title[0] &&
                            strcmp(data->metadata.title, s_display.title) != 0;
+
+      if (track_changed) {
+        s_pending_cover_clear = true;
+      }
 
       if (data->metadata.title[0]) {
         memcpy(s_display.title, data->metadata.title, METADATA_STRING_MAX);
@@ -631,6 +782,29 @@ static void on_rtsp_event(rtsp_event_t event, const rtsp_event_data_t *data,
       s_display.dirty = true;
     }
     break;
+
+  case RTSP_EVENT_ARTWORK:
+    if (data && data->artwork.data && data->artwork.len > 0 &&
+        data->artwork.len <= COVER_MAX_BYTES &&
+        cover_is_valid_type(data->artwork.content_type)) {
+      uint8_t *copy = heap_caps_malloc(data->artwork.len, MALLOC_CAP_SPIRAM);
+      if (copy) {
+        memcpy(copy, data->artwork.data, data->artwork.len);
+        if (s_pending_cover) {
+          heap_caps_free(s_pending_cover);
+        }
+        s_pending_cover = copy;
+        s_pending_cover_len = data->artwork.len;
+        strlcpy(s_pending_cover_type, data->artwork.content_type,
+                sizeof(s_pending_cover_type));
+        s_pending_cover_clear = false;
+        s_display.dirty = true;
+      } else {
+        ESP_LOGW(TAG, "Failed to allocate %zu bytes for artwork",
+                 data->artwork.len);
+      }
+    }
+    break;
   }
 
   STATE_UNLOCK();
@@ -647,14 +821,21 @@ static void display_task(void *pvParameters) {
     // Consume dirty under the state mutex so a concurrent set in the
     // RTSP callback is never lost (clear-after-set ordering).
     bool need_update = false;
+    bool need_cover_update = false;
     display_state_t state;
     STATE_LOCK();
     if (s_display.dirty) {
       s_display.dirty = false;
       need_update = true;
     }
+    need_cover_update = s_pending_cover != NULL || s_pending_cover_clear;
     state = s_display.state;
     STATE_UNLOCK();
+
+    if (need_cover_update && lvgl_port_lock(100)) {
+      ui_update_cover();
+      lvgl_port_unlock();
+    }
 
     if (need_update) {
       ui_update();
@@ -723,7 +904,12 @@ void display_init(void *bus) {
     gpio_set_level(CONFIG_DISPLAY_BL_GPIO, 0);
   }
 
-  bg_load_from_spiffs();
+  uint8_t *initial_bg = NULL;
+  long initial_bg_size = 0;
+  if (bg_read_from_spiffs(&initial_bg, &initial_bg_size)) {
+    (void)initial_bg_size;
+    bg_set_buffer(initial_bg);
+  }
 
   // Only initialise the SPI bus ourselves if the caller didn't pass a
   // pre-initialised one. Calling spi_bus_initialize() on a host that is
@@ -833,4 +1019,50 @@ void display_init(void *bus) {
   xTaskCreatePinnedToCore(display_task, "display", 4096, NULL, 3, NULL, 0);
 
   ESP_LOGI(TAG, "ST7789 display initialized (LVGL 9 + esp_lvgl_port)");
+}
+
+bool display_get_dimensions(int *width, int *height) {
+  if (width) {
+    *width = DISPLAY_WIDTH;
+  }
+  if (height) {
+    *height = DISPLAY_HEIGHT;
+  }
+  return true;
+}
+
+bool display_reload_background(void) {
+  if (!s_lvgl_disp) {
+    return false;
+  }
+
+  uint8_t *new_buf = NULL;
+  long new_size = 0;
+  if (!bg_read_from_spiffs(&new_buf, &new_size)) {
+    return false;
+  }
+  (void)new_size;
+
+  if (!lvgl_port_lock(1000)) {
+    heap_caps_free(new_buf);
+    return false;
+  }
+
+  uint8_t *old_buf = s_bg_buf;
+  lv_image_cache_drop(&s_bg_dsc);
+  bg_set_buffer(new_buf);
+  if (s_bg_obj) {
+    lv_image_set_src(s_bg_obj, &s_bg_dsc);
+  } else {
+    s_bg_obj = lv_image_create(lv_screen_active());
+    lv_image_set_src(s_bg_obj, &s_bg_dsc);
+    lv_obj_align(s_bg_obj, LV_ALIGN_TOP_LEFT, 0, 0);
+    lv_obj_move_background(s_bg_obj);
+  }
+  lvgl_port_unlock();
+
+  if (old_buf) {
+    heap_caps_free(old_buf);
+  }
+  return true;
 }

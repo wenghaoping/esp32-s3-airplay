@@ -19,6 +19,7 @@
 #include "ota.h"
 #include "log_stream.h"
 #include "rtsp_server.h"
+#include "display.h"
 #include "audio_output.h"
 #include "esp_app_desc.h"
 #include "esp_timer.h"
@@ -65,6 +66,9 @@ static const char *TAG = "web_server";
 static httpd_handle_t s_server = NULL;
 
 #define SPIFFS_CHUNK_SIZE 1024
+#define DISPLAY_BG_PATH "/spiffs/bg/background.bin"
+#define DISPLAY_BG_TMP_PATH "/spiffs/bg/background.bin.tmp"
+#define DISPLAY_SOURCE_MAX_BYTES ((size_t)2 * 1024 * 1024)
 
 static esp_err_t serve_spiffs_file(httpd_req_t *req, const char *path,
                                    const char *content_type) {
@@ -1039,6 +1043,101 @@ static esp_err_t system_restart_handler(httpd_req_t *req) {
 /*  SPIFFS File Management API                                         */
 /* ================================================================== */
 
+#ifdef CONFIG_DISPLAY_DRIVER_ST7789
+static esp_err_t display_info_handler(httpd_req_t *req) {
+  int width = 0, height = 0;
+  if (!display_get_dimensions(&width, &height)) {
+    httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "ST7789 is disabled");
+    return ESP_FAIL;
+  }
+
+  struct stat st;
+  bool has_background = stat(DISPLAY_BG_PATH, &st) == 0;
+  size_t output_size = (size_t)width * (size_t)height * 2;
+
+  cJSON *json = cJSON_CreateObject();
+  cJSON_AddBoolToObject(json, "success", true);
+  cJSON_AddNumberToObject(json, "width", width);
+  cJSON_AddNumberToObject(json, "height", height);
+  cJSON_AddNumberToObject(json, "output_size", (double)output_size);
+  cJSON_AddNumberToObject(json, "source_max_size",
+                          (double)DISPLAY_SOURCE_MAX_BYTES);
+  cJSON_AddBoolToObject(json, "has_background", has_background);
+  char *json_str = cJSON_PrintUnformatted(json);
+  httpd_resp_set_type(req, "application/json");
+  httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+  httpd_resp_send(req, json_str, HTTPD_RESP_USE_STRLEN);
+  free(json_str);
+  cJSON_Delete(json);
+  return ESP_OK;
+}
+
+static esp_err_t display_background_handler(httpd_req_t *req) {
+  int width = 0, height = 0;
+  if (!display_get_dimensions(&width, &height)) {
+    httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "ST7789 is disabled");
+    return ESP_FAIL;
+  }
+
+  size_t expected = (size_t)width * (size_t)height * 2;
+  if (req->content_len != expected || req->content_len > 256 * 1024) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
+                        "Invalid RGB565 background size");
+    return ESP_FAIL;
+  }
+
+  FILE *f = fopen(DISPLAY_BG_TMP_PATH, "wb");
+  if (!f) {
+    httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                        "Cannot create background file");
+    return ESP_FAIL;
+  }
+
+  char buf[SPIFFS_CHUNK_SIZE];
+  size_t remaining = expected;
+  bool receive_ok = true;
+  while (remaining > 0) {
+    size_t to_read = remaining < sizeof(buf) ? remaining : sizeof(buf);
+    int received = httpd_req_recv(req, buf, to_read);
+    if (received <= 0 || fwrite(buf, 1, (size_t)received, f) !=
+                             (size_t)received) {
+      receive_ok = false;
+      break;
+    }
+    remaining -= (size_t)received;
+  }
+  fclose(f);
+
+  if (!receive_ok || remaining != 0) {
+    remove(DISPLAY_BG_TMP_PATH);
+    httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                        "Background upload failed");
+    return ESP_FAIL;
+  }
+
+  if (rename(DISPLAY_BG_TMP_PATH, DISPLAY_BG_PATH) != 0) {
+    remove(DISPLAY_BG_TMP_PATH);
+    httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                        "Cannot activate background");
+    return ESP_FAIL;
+  }
+
+  if (!display_reload_background()) {
+    ESP_LOGW(TAG, "Background saved but display reload failed");
+  }
+
+  cJSON *json = cJSON_CreateObject();
+  cJSON_AddBoolToObject(json, "success", true);
+  cJSON_AddNumberToObject(json, "size", (double)expected);
+  char *json_str = cJSON_PrintUnformatted(json);
+  httpd_resp_set_type(req, "application/json");
+  httpd_resp_send(req, json_str, HTTPD_RESP_USE_STRLEN);
+  free(json_str);
+  cJSON_Delete(json);
+  return ESP_OK;
+}
+#endif
+
 // Allowed path prefixes for file upload (prevent writes outside SPIFFS)
 static const char *ALLOWED_PREFIXES[] = {"/spiffs/"};
 
@@ -1308,6 +1407,9 @@ esp_err_t web_server_start(uint16_t port) {
   config.lru_purge_enable = true; // Reclaim stale sockets when all are in use
   config.max_uri_handlers =
       30; // Room for captive portal + EQ + speedtest + brightness + channel
+#ifdef CONFIG_DISPLAY_DRIVER_ST7789
+  config.max_uri_handlers += 2; // ST7789 info + background upload
+#endif
 #ifdef DAC_HAS_SUB_OFFSET
   config.max_uri_handlers += 2; // sub level get/post
 #endif
@@ -1456,6 +1558,18 @@ esp_err_t web_server_start(uint16_t port) {
   httpd_uri_t fs_list_uri = {
       .uri = "/api/fs/list", .method = HTTP_GET, .handler = fs_list_handler};
   httpd_register_uri_handler(s_server, &fs_list_uri);
+
+#ifdef CONFIG_DISPLAY_DRIVER_ST7789
+  httpd_uri_t display_info_uri = {.uri = "/api/display/info",
+                                  .method = HTTP_GET,
+                                  .handler = display_info_handler};
+  httpd_register_uri_handler(s_server, &display_info_uri);
+
+  httpd_uri_t display_background_uri = {.uri = "/api/display/background",
+                                        .method = HTTP_POST,
+                                        .handler = display_background_handler};
+  httpd_register_uri_handler(s_server, &display_background_uri);
+#endif
 
   // Captive portal detection endpoints
   // Apple iOS/macOS

@@ -664,6 +664,11 @@ static void on_rtsp_event(rtsp_event_t event, const rtsp_event_data_t *data,
       scroll_restart();
     }
     break;
+
+  case RTSP_EVENT_ARTWORK:
+    // OLED has no artwork surface; the ST7789 implementation consumes this
+    // event when that driver is selected.
+    break;
   }
 
   taskEXIT_CRITICAL(&s_display_mux);
@@ -870,3 +875,15 @@ void display_init(void *bus) {
 
   ESP_LOGI(TAG, "OLED display initialized");
 }
+
+bool display_get_dimensions(int *width, int *height) {
+  if (width) {
+    *width = 0;
+  }
+  if (height) {
+    *height = 0;
+  }
+  return false;
+}
+
+bool display_reload_background(void) { return false; }
